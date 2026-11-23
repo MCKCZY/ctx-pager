@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "ctx-pager": {
+      "command": "python3",
+      "args": [
+        "-m",
+        "ctx_pager.mcp_server",
+        "--db",
+        ".ctx_pager/memory.db"
+      ],
+      "env": {
+        "PYTHONPATH": "/path/to/ctx-pager/src"
+      }
+    }
+  }
+}
