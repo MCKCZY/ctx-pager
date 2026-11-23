@@ -7,6 +7,24 @@ from ctx_pager.models import LinkRelation, MemoryKind
 from ctx_pager.retriever import HybridRetriever, RetrievalConfig
 
 
+class _BilingualSynonymEmbedder:
+    """Test double simulating a dense cross-lingual embedder without external APIs."""
+
+    def embed(self, text: str) -> dict[str, float]:
+        low = text.lower()
+        vec: dict[str, float] = {}
+        if "oom" in low or "内存耗尽" in text or "显存溢出" in text:
+            vec["concept_oom"] = 1.0
+        if "latency" in low or "延迟" in text:
+            vec["concept_latency"] = 1.0
+        return vec
+
+    def similarity(self, vec_a: dict[str, float], vec_b: dict[str, float]) -> float:
+        if not vec_a or not vec_b:
+            return 0.0
+        return sum(val * vec_b.get(k, 0.0) for k, val in vec_a.items())
+
+
 class TestRetriever(unittest.TestCase):
     def test_bilingual_exact_id_and_conflict_gating(self) -> None:
         with ContextPager(":memory:") as eng:
@@ -51,7 +69,7 @@ class TestRetriever(unittest.TestCase):
             self.assertEqual(res_id.candidates[0].record.id, new.id)
             self.assertGreater(res_id.candidates[0].breakdown.identifier, 0.0)
 
-    def test_graph_expansion_surfaces_zero_keyword_root_cause(self) -> None:
+    def test_graph_expansion_surfaces_zero_keyword_root_cause_and_skips_supersedes(self) -> None:
         with ContextPager(":memory:") as eng:
             symptom = eng.commit(
                 kind=MemoryKind.FACT,
@@ -72,10 +90,30 @@ class TestRetriever(unittest.TestCase):
             )
             eng.link(symptom.id, root_cause.id, LinkRelation.CAUSED_BY, weight=0.95, turn=6)
 
+            old_dec = eng.commit(
+                kind=MemoryKind.DECISION,
+                scope="gateway",
+                title="Gateway legacy port 8080",
+                summary="Old 8080 setting",
+                turn=2,
+            )
+            _, new_dec = eng.supersede(
+                old_dec.id,
+                title="Gateway TLS port 9443",
+                summary="Use TLS port 9443 for gateway",
+                turn=7,
+            )
+
             res = eng.retriever.retrieve("502 Bad Gateway", current_turn=20)
             cand_map = {c.record.id: c for c in res.candidates}
             self.assertIn(root_cause.id, cand_map)
             self.assertGreater(cand_map[root_cause.id].breakdown.graph, 0.0)
+            self.assertNotIn(old_dec.id, cand_map)
+
+            # Even on direct query for new_dec, SUPERSEDES edge must not pull old_dec when gating is on.
+            res_dec = eng.retriever.retrieve("Gateway TLS port 9443", current_turn=20)
+            self.assertIn(new_dec.id, [c.record.id for c in res_dec.candidates])
+            self.assertNotIn(old_dec.id, [c.record.id for c in res_dec.candidates])
 
             # Without graph expansion, root_cause should not receive graph boost.
             no_graph = HybridRetriever(
@@ -85,14 +123,14 @@ class TestRetriever(unittest.TestCase):
             ng_map = {c.record.id: c for c in res_ng.candidates}
             self.assertEqual(ng_map[root_cause.id].breakdown.graph, 0.0)
 
-    def test_ebbinghaus_decay_and_mmr_diversity(self) -> None:
+    def test_ebbinghaus_decay_spaced_repetition_and_mmr_diversity(self) -> None:
         with ContextPager(":memory:") as eng:
             # Two near-duplicate notes matching all query terms closely vs one distinct note.
             d1 = eng.commit(
                 kind=MemoryKind.FACT,
                 scope="auth",
                 title="RS256 public key permission 0600 staging",
-                summary="Verify keys/jwt_pub.pem has chmod 0600 and rotation check on staging",
+                summary="Verify keys/jwt_pub.pem has chmod 0600 and rotation check on staging host",
                 entities=["keys/jwt_pub.pem", "0600"],
                 turn=18,
             )
@@ -100,25 +138,36 @@ class TestRetriever(unittest.TestCase):
                 kind=MemoryKind.FACT,
                 scope="auth",
                 title="RS256 public key permission 0600 prod",
-                summary="Verify keys/jwt_pub.pem has chmod 0600 and rotation check on prod",
+                summary="Verify keys/jwt_pub.pem has chmod 0600 and rotation check on prod host",
                 entities=["keys/jwt_pub.pem", "0600"],
                 turn=17,
             )
             distinct = eng.commit(
-                kind=MemoryKind.PROCEDURE,
+                kind=MemoryKind.FACT,
                 scope="auth",
-                title="JWKS cache TTL configuration",
-                summary="Set keys/jwt_pub.pem JWKS cache-control max-age=300 for rotation",
-                entities=["keys/jwt_pub.pem"],
+                title="JWKS cache TTL 0600 rotation endpoint",
+                summary="Set keys/jwt_pub.pem JWKS cache-control max-age=300 for 0600 rotation",
+                entities=["keys/jwt_pub.pem", "0600"],
                 turn=16,
             )
-            old_ep = eng.commit(
+            old_ep_unaccessed = eng.commit(
                 kind=MemoryKind.EPISODE,
                 scope="auth",
-                title="Temporary key rotation test note",
-                summary="Tested key rotation smoke script",
+                title="Temporary key rotation test note alpha",
+                summary="Tested key rotation smoke script alpha",
                 turn=1,
             )
+            old_ep_reinforced = eng.commit(
+                kind=MemoryKind.EPISODE,
+                scope="auth",
+                title="Temporary key rotation test note beta",
+                summary="Tested key rotation smoke script beta",
+                turn=1,
+            )
+            # Same turn_last_accessed=10, but reinforced has higher access_count -> slower decay.
+            eng.storage.record_access([old_ep_unaccessed.id], turn=10)
+            for _ in range(5):
+                eng.storage.record_access([old_ep_reinforced.id], turn=10)
             eng.storage.record_access([d1.id, d2.id], turn=28)
 
             no_mmr = HybridRetriever(eng.storage, config=RetrievalConfig(enable_mmr=False))
@@ -132,7 +181,46 @@ class TestRetriever(unittest.TestCase):
             self.assertNotEqual(set(mmr_top2), {d1.id, d2.id})
 
             by_id = {c.record.id: c for c in res_mmr.candidates}
-            self.assertGreater(by_id[d1.id].breakdown.recency, by_id[old_ep.id].breakdown.recency)
+            self.assertGreater(
+                by_id[old_ep_reinforced.id].breakdown.recency,
+                by_id[old_ep_unaccessed.id].breakdown.recency,
+            )
+
+    def test_pluggable_embedder_empty_query_and_semantic_zero_suppression(self) -> None:
+        with ContextPager(":memory:", embedder=_BilingualSynonymEmbedder()) as eng:
+            # Zero lexical/identifier overlap with query "内存耗尽" unless custom embedder bridges "OOM".
+            oom_fact = eng.commit(
+                kind=MemoryKind.FACT,
+                scope="train",
+                title="Trainer crash under high batch",
+                summary="Process killed by OOM during backward pass",
+                turn=2,
+            )
+            unrelated_constraint = eng.commit(
+                kind=MemoryKind.CONSTRAINT,
+                scope="billing",
+                title="Invoice currency precision",
+                summary="Always round billing amounts to 2 decimal places",
+                importance=1.0,
+                turn=19,
+            )
+
+            res = eng.retriever.retrieve("内存耗尽", current_turn=20)
+            self.assertEqual(res.candidates[0].record.id, oom_fact.id)
+            self.assertGreater(res.candidates[0].breakdown.vector, 0.9)
+            by_id = {c.record.id: c for c in res.candidates}
+            self.assertGreater(
+                by_id[oom_fact.id].breakdown.total,
+                by_id[unrelated_constraint.id].breakdown.total,
+            )
+
+            # Empty query triggers bootstrap recency+importance ranking without errors.
+            boot = eng.retriever.retrieve("", current_turn=20)
+            self.assertEqual(len(boot.candidates), 2)
+
+            # Replay retains custom embedder.
+            rep = eng.replay(10, query="内存耗尽", budget=1024)
+            self.assertIn("Process killed by OOM", rep["frame"].rendered)
 
 
 if __name__ == "__main__":

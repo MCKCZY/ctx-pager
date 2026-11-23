@@ -21,6 +21,7 @@ from ctx_pager.packer import ContextPacker
 from ctx_pager.retriever import HybridRetriever, RetrievalConfig, RetrievalWeights
 from ctx_pager.storage import MemoryStorage
 from ctx_pager.tokenizer import extract_identifiers
+from ctx_pager.vectorizer import Embedder
 
 
 class ContextPager:
@@ -32,10 +33,11 @@ class ContextPager:
         *,
         weights: RetrievalWeights | None = None,
         retrieval_config: RetrievalConfig | None = None,
+        embedder: Embedder | None = None,
     ) -> None:
         self.storage = MemoryStorage(db_path)
         self.retriever = HybridRetriever(
-            self.storage, weights=weights, config=retrieval_config
+            self.storage, weights=weights, config=retrieval_config, embedder=embedder
         )
         self.packer = ContextPacker()
         self.compactor = MemoryCompactor(self.storage)
@@ -89,8 +91,26 @@ class ContextPager:
         supersedes_id: str | None = None,
         turn: int | None = None,
     ) -> MemoryRecord:
+        title_clean = title.strip()
+        summary_clean = summary.strip()
+        if not title_clean:
+            raise ValueError("title must be non-empty")
+        if not summary_clean:
+            raise ValueError("summary must be non-empty")
+
         eff_kind = MemoryKind(kind) if isinstance(kind, str) else kind
-        eff_entities = self._merge_entities(entities, f"{title}\n{summary}\n{detail}")
+        if supersedes_id:
+            old = self.storage.get_memory(supersedes_id)
+            if old is None:
+                raise KeyError(f"Memory not found: {supersedes_id}")
+            if old.status == MemoryStatus.SUPERSEDED:
+                raise ValueError(
+                    f"Memory {supersedes_id} is already superseded by {old.superseded_by_id}"
+                )
+            if old.status == MemoryStatus.ARCHIVED:
+                raise ValueError(f"Cannot supersede archived memory: {supersedes_id}")
+
+        eff_entities = self._merge_entities(entities, f"{title_clean}\n{summary_clean}\n{detail}")
 
         mem_id = self.storage.next_memory_id()
         eff_turn = self.storage.get_current_turn() if turn is None else turn
@@ -98,8 +118,8 @@ class ContextPager:
             id=mem_id,
             kind=eff_kind,
             scope=scope,
-            title=title.strip(),
-            summary=summary.strip(),
+            title=title_clean,
+            summary=summary_clean,
             detail=detail.strip(),
             entities=eff_entities,
             tags=list(tags or []),
@@ -134,19 +154,32 @@ class ContextPager:
         pinned: bool | None = None,
         turn: int | None = None,
     ) -> tuple[MemoryRecord, MemoryRecord]:
+        title_clean = title.strip()
+        summary_clean = summary.strip()
+        if not title_clean:
+            raise ValueError("title must be non-empty")
+        if not summary_clean:
+            raise ValueError("summary must be non-empty")
+
         old = self.storage.get_memory(old_id)
         if old is None:
             raise KeyError(f"Memory not found: {old_id}")
+        if old.status == MemoryStatus.SUPERSEDED:
+            raise ValueError(
+                f"Memory {old_id} is already superseded by {old.superseded_by_id}"
+            )
+        if old.status == MemoryStatus.ARCHIVED:
+            raise ValueError(f"Cannot supersede archived memory: {old_id}")
 
-        eff_entities = self._merge_entities(entities, f"{title}\n{summary}\n{detail}")
+        eff_entities = self._merge_entities(entities, f"{title_clean}\n{summary_clean}\n{detail}")
 
         eff_turn = self.storage.get_current_turn() if turn is None else turn
         new_rec = MemoryRecord(
             id=self.storage.next_memory_id(),
             kind=old.kind,
             scope=scope or old.scope,
-            title=title.strip(),
-            summary=summary.strip(),
+            title=title_clean,
+            summary=summary_clean,
             detail=detail.strip(),
             entities=eff_entities,
             tags=list(tags if tags is not None else old.tags),
@@ -174,6 +207,8 @@ class ContextPager:
         turn: int | None = None,
         record_access: bool = True,
     ) -> ContextFrame:
+        if budget is not None and budget <= 0:
+            raise ValueError("budget must be positive")
         if isinstance(profile, str):
             if profile not in PRESET_PROFILES:
                 raise ValueError(
@@ -181,6 +216,8 @@ class ContextPager:
                 )
             base_profile = PRESET_PROFILES[profile]
         else:
+            if profile.total_tokens <= 0:
+                raise ValueError("budget must be positive")
             base_profile = profile
 
         eff_profile = BudgetProfile(
@@ -249,10 +286,13 @@ class ContextPager:
                     neighbor_ids.append(link.dst_id)
             neighbor_records = self.storage.get_memories_by_ids(neighbor_ids)
 
+        found_ids = {r.id for r in records}
+        missing_ids = [mid for mid in memory_ids if mid not in found_ids]
         return {
             "records": records,
             "links": links,
             "neighbors": neighbor_records,
+            "missing_ids": missing_ids,
         }
 
     def link(
@@ -283,6 +323,9 @@ class ContextPager:
         open_loops: list[str] | None = None,
         turn: int | None = None,
     ) -> CheckpointRecord:
+        goal_clean = goal.strip()
+        if not goal_clean:
+            raise ValueError("goal must be non-empty")
         loops = list(open_loops) if open_loops is not None else [
             r.id
             for r in self.storage.list_memories(
@@ -290,8 +333,8 @@ class ContextPager:
             )
         ]
         return self.storage.save_checkpoint(
-            goal=goal,
-            state_summary=state_summary,
+            goal=goal_clean,
+            state_summary=state_summary.strip(),
             active_open_loops=loops,
             turn=turn,
         )
@@ -328,12 +371,15 @@ class ContextPager:
         query: str = "",
         budget: int = 2048,
     ) -> dict[str, Any]:
+        if budget <= 0:
+            raise ValueError("budget must be positive")
         replayed_storage = self.storage.replay_events_to_storage(target_turn)
         try:
             replayed_retriever = HybridRetriever(
                 replayed_storage,
                 weights=self.retriever.weights,
                 config=self.retriever.config,
+                embedder=self.retriever.custom_embedder,
             )
             pinned = replayed_storage.list_memories(status=MemoryStatus.ACTIVE, pinned=True)
             open_loops = replayed_storage.list_memories(

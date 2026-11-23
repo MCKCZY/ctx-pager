@@ -48,14 +48,14 @@
 
 | Budget | Strategy | Direct Recall | Effective Recall (incl. L0 Page-In) | Constraint Survival | Multi-Hop Recall | Stale Intrusion (Lower Better) | P95 (ms) |
 | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1024 | `sliding_window` | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.53 |
-| 1024 | `rolling_summary` | 11.1% | 11.1% | 50.0% | 0.0% | 50.0% | 0.89 |
-| 1024 | `flat_bm25` | 96.3% | 96.3% | 100.0% | 66.7% | 100.0% | 4.10 |
-| 1024 | `ctx_pager_ablated` | 96.3% | 96.3% | 100.0% | 66.7% | 100.0% | 12.16 |
-| 1024 | **`ctx_pager_full`** | **92.6%** | **100.0%** | **100.0%** | **100.0%** | **0.0%** | **13.55** |
-| 2048 | `sliding_window` | 14.8% | 14.8% | 0.0% | 0.0% | 16.7% | 1.09 |
-| 2048 | `flat_bm25` | 96.3% | 96.3% | 100.0% | 66.7% | 100.0% | 4.80 |
-| 2048 | **`ctx_pager_full`** | **100.0%** | **100.0%** | **100.0%** | **100.0%** | **0.0%** | **12.59** |
+| 1024 | `sliding_window` | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.55 |
+| 1024 | `rolling_summary` | 11.1% | 11.1% | 50.0% | 0.0% | 50.0% | 0.85 |
+| 1024 | `flat_bm25` | 96.3% | 96.3% | 100.0% | 66.7% | 100.0% | 4.02 |
+| 1024 | `ctx_pager_ablated` | 96.3% | 96.3% | 100.0% | 66.7% | 100.0% | 10.84 |
+| 1024 | **`ctx_pager_full`** | **92.6%** | **100.0%** | **100.0%** | **100.0%** | **0.0%** | **13.48** |
+| 2048 | `sliding_window` | 14.8% | 14.8% | 0.0% | 0.0% | 16.7% | 1.06 |
+| 2048 | `flat_bm25` | 96.3% | 96.3% | 100.0% | 66.7% | 100.0% | 4.56 |
+| 2048 | **`ctx_pager_full`** | **100.0%** | **100.0%** | **100.0%** | **100.0%** | **0.0%** | **12.77** |
 
 ## 快速开始
 
@@ -137,7 +137,7 @@ ctx-pager/
 ├── src/ctx_pager/              # 核心引擎包 (models/tokenizer/storage/vectorizer/retriever/packer/compactor/cli/mcp_server)
 ├── skills/ctx-pager/           # Agent Skill 标准包 (82 行精简 SKILL.md + references/ + resources/ + scripts/)
 ├── benchmarks/                 # 3 场景 235 轮基准数据集、5 基线对比与评测脚本
-├── tests/                      # 17 项 unittest 单元测试与集成测试
+├── tests/                      # 26 项 unittest 单元测试与集成测试
 ├── examples/                   # 35 轮受限上下文完整演示与 MCP 配置示例
 ├── scripts/                    # Skill 一键安装器
 └── docs/                       # ARCHITECTURE.md / DESIGN_TRADEOFFS.md / BENCHMARKS.md
@@ -146,7 +146,7 @@ ctx-pager/
 ## 测试与工程验证
 
 ```bash
-make check   # 编译检查 + 全部 17 项单测 + 35 轮端到端演示
+make check   # 编译检查 + 全部 26 项单测 + 35 轮端到端演示
 make bench   # 重新生成完整定量评测报告
 ```
 

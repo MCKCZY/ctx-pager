@@ -17,12 +17,14 @@ from ctx_pager.models import (
     ScoreBreakdown,
 )
 from ctx_pager.retriever import RetrievalConfig, RetrievalWeights
+from ctx_pager.vectorizer import Embedder, SparseTfIdfEmbedder
 
 __all__ = [
     "BudgetProfile",
     "CheckpointRecord",
     "ContextFrame",
     "ContextPager",
+    "Embedder",
     "EventRecord",
     "LinkRelation",
     "MemoryKind",
@@ -35,6 +37,7 @@ __all__ = [
     "RetrievalConfig",
     "RetrievalWeights",
     "ScoreBreakdown",
+    "SparseTfIdfEmbedder",
 ]
 
 __version__ = "0.1.0"

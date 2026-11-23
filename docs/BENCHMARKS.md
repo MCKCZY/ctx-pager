@@ -37,31 +37,31 @@ PYTHONPATH=src python3 -m benchmarks.run_benchmark
 
 | Strategy | Direct Recall | Effective Recall (incl. L0 Page-In) | Constraint Survival | Exact ID Retention | Multi-Hop Recall | Stale Intrusion (Lower Better) | Avg Tokens | P95 Latency (ms) |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `sliding_window` | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 1002 | 0.53 |
-| `rolling_summary` | 11.1% | 11.1% | 50.0% | 0.0% | 0.0% | 50.0% | 958 | 0.89 |
-| `flat_bm25` | 96.3% | 96.3% | 100.0% | 100.0% | 66.7% | 100.0% | 761 | 4.10 |
-| `ctx_pager_ablated` | 96.3% | 96.3% | 100.0% | 100.0% | 66.7% | 100.0% | 938 | 12.16 |
-| `ctx_pager_full` | 92.6% | 100.0% | 100.0% | 100.0% | 100.0% | 0.0% | 942 | 13.55 |
+| `sliding_window` | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 1002 | 0.55 |
+| `rolling_summary` | 11.1% | 11.1% | 50.0% | 0.0% | 0.0% | 50.0% | 958 | 0.85 |
+| `flat_bm25` | 96.3% | 96.3% | 100.0% | 100.0% | 66.7% | 100.0% | 760 | 4.02 |
+| `ctx_pager_ablated` | 96.3% | 96.3% | 100.0% | 100.0% | 66.7% | 100.0% | 938 | 10.84 |
+| `ctx_pager_full` | 92.6% | 100.0% | 100.0% | 100.0% | 100.0% | 0.0% | 943 | 13.48 |
 
 ### Token Budget = 2048 (`small_8k` 级别)
 
 | Strategy | Direct Recall | Effective Recall (incl. L0 Page-In) | Constraint Survival | Exact ID Retention | Multi-Hop Recall | Stale Intrusion (Lower Better) | Avg Tokens | P95 Latency (ms) |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `sliding_window` | 14.8% | 14.8% | 0.0% | 25.0% | 0.0% | 16.7% | 2036 | 1.09 |
-| `rolling_summary` | 22.2% | 22.2% | 50.0% | 0.0% | 0.0% | 66.7% | 2014 | 1.61 |
-| `flat_bm25` | 96.3% | 96.3% | 100.0% | 100.0% | 66.7% | 100.0% | 1027 | 4.80 |
-| `ctx_pager_ablated` | 96.3% | 96.3% | 100.0% | 100.0% | 66.7% | 100.0% | 1355 | 11.62 |
-| `ctx_pager_full` | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 0.0% | 1323 | 12.59 |
+| `sliding_window` | 14.8% | 14.8% | 0.0% | 25.0% | 0.0% | 16.7% | 2036 | 1.06 |
+| `rolling_summary` | 22.2% | 22.2% | 50.0% | 0.0% | 0.0% | 66.7% | 2014 | 1.72 |
+| `flat_bm25` | 96.3% | 96.3% | 100.0% | 100.0% | 66.7% | 100.0% | 1027 | 4.56 |
+| `ctx_pager_ablated` | 96.3% | 96.3% | 100.0% | 100.0% | 66.7% | 100.0% | 1354 | 11.36 |
+| `ctx_pager_full` | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 0.0% | 1322 | 12.77 |
 
 ### Token Budget = 4096 (`medium_16k` 级别)
 
 | Strategy | Direct Recall | Effective Recall (incl. L0 Page-In) | Constraint Survival | Exact ID Retention | Multi-Hop Recall | Stale Intrusion (Lower Better) | Avg Tokens | P95 Latency (ms) |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `sliding_window` | 51.9% | 51.9% | 0.0% | 58.3% | 33.3% | 100.0% | 4067 | 2.58 |
-| `rolling_summary` | 37.0% | 37.0% | 50.0% | 16.7% | 0.0% | 83.3% | 3327 | 3.06 |
-| `flat_bm25` | 96.3% | 96.3% | 100.0% | 100.0% | 66.7% | 100.0% | 1259 | 5.16 |
-| `ctx_pager_ablated` | 96.3% | 96.3% | 100.0% | 100.0% | 66.7% | 100.0% | 1377 | 11.28 |
-| `ctx_pager_full` | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 0.0% | 1332 | 13.31 |
+| `sliding_window` | 51.9% | 51.9% | 0.0% | 58.3% | 33.3% | 100.0% | 4067 | 1.99 |
+| `rolling_summary` | 37.0% | 37.0% | 50.0% | 16.7% | 0.0% | 83.3% | 3327 | 2.64 |
+| `flat_bm25` | 96.3% | 96.3% | 100.0% | 100.0% | 66.7% | 100.0% | 1255 | 4.99 |
+| `ctx_pager_ablated` | 96.3% | 96.3% | 100.0% | 100.0% | 66.7% | 100.0% | 1376 | 11.30 |
+| `ctx_pager_full` | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 0.0% | 1331 | 12.81 |
 
 ## 4. 结果拆解与消融结论
 
@@ -72,9 +72,9 @@ PYTHONPATH=src python3 -m benchmarks.run_benchmark
 3. **1-Hop 图扩散补齐跨术语因果链**:
    在 `multi_hop_context` 探针中，关闭图扩散的 `flat_bm25` 与 `ctx_pager_ablated` 均停留在 `66.7%`，而启用 `caused_by` 图扩散的 `ctx_pager_full` 稳定达到 **`100.0%`**。
 4. **L0/L1/L2 分层打包在 1024 极紧预算下的换页取舍**:
-   在 `1024` tokens 下，`ctx_pager_full` 优先保留了 Checkpoint、Pinned 约束与 Open Loops，并在召回区把部分低紧迫度或长详情条目先以 `L0/L1` 放进窗口，因此首轮 `Direct Recall` 为 `92.6%`（略低于 `flat_bm25` 的 `96.3%`），但通过尾部 `Page-in available` 暴露出的指针在 1 次 `page-in` 后即达到 **`100.0%` Effective Recall**。预算升至 `2048` 后，`Direct Recall` 直接升至 **`100.0%`** 且平均仅消耗 `1323` tokens。
+   在 `1024` tokens 下，`ctx_pager_full` 优先保留了 Checkpoint、Pinned 约束与 Open Loops，并在召回区把部分低紧迫度或长详情条目先以 `L0/L1` 放进窗口，因此首轮 `Direct Recall` 为 `92.6%`（略低于 `flat_bm25` 的 `96.3%`），但通过尾部 `Page-in available` 暴露出的指针在 1 次 `page-in` 后即达到 **`100.0%` Effective Recall**。预算升至 `2048` 后，`Direct Recall` 直接升至 **`100.0%`** 且平均仅消耗 `1322` tokens。
 5. **纯 Python 本地延迟可控**:
-   经过 MMR 预分词优化后，`ctx_pager_full` 全流程（检索 + 图扩散 + MMR + 分辨率贪心打包 + 格式化验证 + `page_in` 查表）的 P95 延迟稳定在 **`13.3–13.9ms`**。
+   经过 MMR 预分词优化后，`ctx_pager_full` 全流程（检索 + 图扩散 + MMR + 分辨率贪心打包 + 格式化验证 + `page_in` 查表）的 P95 延迟稳定在 **`12.7–13.5ms`**。
 
 ## 5. 评测边界声明
 

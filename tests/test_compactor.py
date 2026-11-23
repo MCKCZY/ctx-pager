@@ -51,7 +51,39 @@ class TestCompactorAndIngestor(unittest.TestCase):
             self.assertEqual(old_rec.status, MemoryStatus.SUPERSEDED)
             self.assertIn("9443", new_rec.summary)
 
-    def test_lossless_compaction_protects_constraints_and_open_loops(self) -> None:
+    def test_cross_kind_revision_and_todo_precedence(self) -> None:
+        with ContextPager(":memory:") as eng:
+            # Explicit TODO prefix with "must" classifies as OPEN_LOOP, not pinned CONSTRAINT.
+            r_todo = eng.ingest_turn(
+                turn=1,
+                role="user",
+                scope="db",
+                text="TODO: must verify migrations/004_tokens.sql rollback timing。待办：必须检查回滚锁表耗时。",
+            )
+            self.assertEqual(len(r_todo.created), 2)
+            for rec in r_todo.created:
+                self.assertEqual(rec.kind, MemoryKind.OPEN_LOOP)
+                self.assertFalse(rec.pinned)
+
+            # FACT followed by DECISION with revision cue supersedes the prior FACT in same scope.
+            r_fact = eng.ingest_turn(
+                turn=2,
+                role="user",
+                scope="gateway",
+                text="gateway_srv 目前运行在端口 8080 上。",
+            )
+            self.assertEqual(r_fact.created[0].kind, MemoryKind.FACT)
+
+            r_rev = eng.ingest_turn(
+                turn=3,
+                role="user",
+                scope="gateway",
+                text="决定将 gateway_srv 端口改为 9443。",
+            )
+            self.assertEqual(len(r_rev.superseded), 1)
+            self.assertEqual(r_rev.superseded[0][0], r_fact.created[0].id)
+
+    def test_lossless_compaction_protects_constraints_and_replays_cleanly(self) -> None:
         with ContextPager(":memory:") as eng:
             c = eng.commit(
                 kind=MemoryKind.CONSTRAINT,
@@ -81,6 +113,11 @@ class TestCompactorAndIngestor(unittest.TestCase):
                 )
 
             eng.storage.set_turn(30)
+            with self.assertRaises(ValueError):
+                eng.compact(older_than_turns=-1)
+            with self.assertRaises(ValueError):
+                eng.compact(min_group_size=1)
+
             dry = eng.compact(older_than_turns=15, min_group_size=3, dry_run=True)
             self.assertEqual(dry.groups_compacted, 1)
             self.assertEqual(len(dry.archived_ids), 4)
@@ -102,6 +139,33 @@ class TestCompactorAndIngestor(unittest.TestCase):
             self.assertEqual(eng.storage.get_memory(c.id).status, MemoryStatus.ACTIVE)
             self.assertEqual(eng.storage.get_memory(ol.id).status, MemoryStatus.ACTIVE)
             self.assertTrue(eng.doctor()["ok"])
+
+            # Replay before compaction vs after compaction matches state transitions.
+            rep_before = eng.replay(10)
+            rep_after = eng.replay(30)
+            before_ep_statuses = {
+                m["id"]: m["status"] for m in rep_before["memories"] if m["id"].startswith("M-")
+            }
+            after_ep_statuses = {
+                m["id"]: m["status"] for m in rep_after["memories"] if m["id"].startswith("M-")
+            }
+            self.assertEqual(before_ep_statuses[eps[0].id], "active")
+            self.assertEqual(after_ep_statuses[eps[0].id], "archived")
+
+    def test_compaction_non_inflation_guard(self) -> None:
+        with ContextPager(":memory:") as eng:
+            # Tiny 1-token titles in a small group where digest overhead exceeds sum of L1s.
+            for t in (1, 2):
+                eng.commit(
+                    kind=MemoryKind.EPISODE,
+                    scope="tiny",
+                    title="ok",
+                    summary="ok",
+                    turn=t,
+                )
+            eng.storage.set_turn(30)
+            rep = eng.compact(older_than_turns=10, min_group_size=2)
+            self.assertEqual(rep.groups_compacted, 0)
 
 
 if __name__ == "__main__":

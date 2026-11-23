@@ -225,6 +225,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "records": [r.to_dict() for r in res["records"]],
                             "links": [l.to_dict() for l in res["links"]],
                             "neighbors": [n.to_dict() for n in res["neighbors"]],
+                            "missing_ids": res["missing_ids"],
                         }
                     )
                 else:
@@ -238,7 +239,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         print("\nLinked Neighbors (L1):")
                         for n in res["neighbors"]:
                             print(n.render(Resolution.L1))
-                return 0
+                    if res["missing_ids"]:
+                        print(
+                            f"warning: missing memory IDs: {', '.join(res['missing_ids'])}",
+                            file=sys.stderr,
+                        )
+                return 0 if res["records"] else 1
 
             if cmd == "supersede":
                 old_rec, new_rec = engine.supersede(

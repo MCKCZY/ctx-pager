@@ -19,8 +19,11 @@ _CAMEL_ID_RE = re.compile(r"\b(?:[a-z]+[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Z
 _VERSION_PORT_IP_RE = re.compile(
     r"\b(?:v?\d+\.\d+(?:\.\d+)*(?:-[A-Za-z0-9.]+)?|\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?)\b"
 )
-_COLON_ADDR_RE = re.compile(r"\b[A-Za-z0-9_.-]+:\d{2,5}\b")
-_PORT_CUE_RE = re.compile(r"(?:port|端口|:)\s*(\d{2,5})\b", re.IGNORECASE)
+_COLON_ADDR_RE = re.compile(r"\b(?:[A-Za-z_][A-Za-z0-9_.-]*|(?:\d+\.){1,3}\d+):\d{2,5}\b")
+_PORT_CUE_RE = re.compile(
+    r"(?:(?:port|端口)\s*[:=]?\s*(\d{2,5})\b|(?<![0-9]):(\d{2,5})(?!:\d)\b)",
+    re.IGNORECASE,
+)
 _BACKTICK_RE = re.compile(r"`([^`\n]{2,80})`")
 _ALLCAPS_NUM_RE = re.compile(r"\b[A-Z]{2,}[0-9]{2,}\b")
 
@@ -142,7 +145,9 @@ def extract_identifiers(text: str) -> list[str]:
                 found.append(token.lower())
 
     for match in _PORT_CUE_RE.finditer(text):
-        found.append(match.group(1).lower())
+        port = match.group(1) or match.group(2)
+        if port:
+            found.append(port.lower())
 
     for match in _BACKTICK_RE.finditer(text):
         inner = match.group(1).strip()

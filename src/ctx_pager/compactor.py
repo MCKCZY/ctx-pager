@@ -202,7 +202,13 @@ class TurnIngestor:
 
             # 2. Explicit revision / conflict detection within scope.
             if kind in (MemoryKind.DECISION, MemoryKind.CONSTRAINT, MemoryKind.FACT) and self._has_revision_cue(clause):
-                sup_target = self._find_conflict_target(candidate, active_same_scope)
+                if kind == MemoryKind.DECISION:
+                    conflict_pool = active_same_scope + self.storage.list_memories(
+                        status=MemoryStatus.ACTIVE, kind=MemoryKind.FACT, scope=scope
+                    )
+                else:
+                    conflict_pool = active_same_scope
+                sup_target = self._find_conflict_target(candidate, conflict_pool)
                 if sup_target is not None:
                     new_id = self.storage.next_memory_id()
                     candidate.id = new_id
@@ -221,7 +227,9 @@ class TurnIngestor:
 
     @staticmethod
     def _classify_clause(clause: str) -> MemoryKind | None:
-        low = clause.lower()
+        low = clause.lower().lstrip()
+        if low.startswith(("todo:", "todo ", "待办：", "待办:", "pending:", "follow-up:")):
+            return MemoryKind.OPEN_LOOP
         if any(cue in low for cue in _CONSTRAINT_CUES):
             return MemoryKind.CONSTRAINT
         if any(cue in low for cue in _OPEN_LOOP_CUES):
@@ -296,6 +304,10 @@ class MemoryCompactor:
         current_turn: int | None = None,
         dry_run: bool = False,
     ) -> CompactionReport:
+        if older_than_turns < 0:
+            raise ValueError("older_than_turns must be >= 0")
+        if min_group_size < 2:
+            raise ValueError("min_group_size must be >= 2")
         turn = self.storage.get_current_turn() if current_turn is None else current_turn
         active_episodes = self.storage.list_memories(
             status=MemoryStatus.ACTIVE,
@@ -344,9 +356,8 @@ class MemoryCompactor:
             if len(summary_joined) > 220:
                 summary_joined = summary_joined[:217].rstrip() + "..."
 
-            digest_id = "DRY-RUN" if dry_run else self.storage.next_memory_id()
-            digest = MemoryRecord(
-                id=digest_id,
+            digest_preview = MemoryRecord(
+                id="PREVIEW",
                 kind=MemoryKind.EPISODE,
                 scope=scope,
                 title=f"Compacted {len(records)} episodes ({scope}, T{min_t}-T{max_t})",
@@ -355,6 +366,26 @@ class MemoryCompactor:
                 entities=merged_entities[:12],
                 tags=["compacted_digest"],
                 importance=DEFAULT_IMPORTANCE[MemoryKind.EPISODE],
+                turn_created=min_t,
+                turn_updated=turn,
+                turn_last_accessed=turn,
+                source_events=merged_events,
+            )
+            # Never inflate active token footprint during compaction.
+            if digest_preview.token_l1 >= tokens_before:
+                continue
+
+            digest_id = "DRY-RUN" if dry_run else self.storage.next_memory_id()
+            digest = MemoryRecord(
+                id=digest_id,
+                kind=MemoryKind.EPISODE,
+                scope=scope,
+                title=digest_preview.title,
+                summary=digest_preview.summary,
+                detail=digest_preview.detail,
+                entities=digest_preview.entities,
+                tags=digest_preview.tags,
+                importance=digest_preview.importance,
                 turn_created=min_t,
                 turn_updated=turn,
                 turn_last_accessed=turn,

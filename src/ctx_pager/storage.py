@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -183,6 +184,15 @@ class MemoryStorage:
         self._set_meta(key, str(val + 1))
         return val
 
+    @staticmethod
+    def _validate_turn(turn: int | None) -> None:
+        if turn is not None and turn < 0:
+            raise ValueError(f"turn must be >= 0, got {turn}")
+
+    def _reserve_event_id_in_tx(self) -> str:
+        evt_num = self._alloc_seq("next_evt_seq")
+        return f"E-{evt_num:06d}"
+
     def next_memory_id(self) -> str:
         with self.conn:
             seq = self._alloc_seq("next_mem_seq")
@@ -199,13 +209,13 @@ class MemoryStorage:
         event_type: str,
         payload: dict[str, Any],
         created_at: str | None = None,
+        event_id: str | None = None,
     ) -> EventRecord:
         last_row = self.conn.execute(
             "SELECT content_hash FROM events ORDER BY seq DESC LIMIT 1"
         ).fetchone()
         prev_hash = last_row["content_hash"] if last_row else _GENESIS_HASH
-        evt_num = self._alloc_seq("next_evt_seq")
-        event_id = f"E-{evt_num:06d}"
+        eff_event_id = event_id or self._reserve_event_id_in_tx()
         ts = created_at or _utc_now()
         content_hash = _compute_event_hash(prev_hash, turn, event_type, payload)
         payload_json = json.dumps(payload, sort_keys=True, ensure_ascii=False)
@@ -214,12 +224,12 @@ class MemoryStorage:
             INSERT INTO events(event_id, turn, event_type, payload_json, prev_hash, content_hash, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (event_id, turn, event_type, payload_json, prev_hash, content_hash, ts),
+            (eff_event_id, turn, event_type, payload_json, prev_hash, content_hash, ts),
         )
-        seq = int(cur.lastrowid or evt_num)
+        seq = int(cur.lastrowid or 1)
         return EventRecord(
             seq=seq,
-            event_id=event_id,
+            event_id=eff_event_id,
             turn=turn,
             event_type=event_type,
             payload=payload,
@@ -231,6 +241,7 @@ class MemoryStorage:
     def append_event(
         self, turn: int, event_type: str, payload: dict[str, Any]
     ) -> EventRecord:
+        self._validate_turn(turn)
         with self.conn:
             if turn > self.get_current_turn():
                 self._set_meta("current_turn", str(turn))
@@ -336,6 +347,7 @@ class MemoryStorage:
     def insert_memory(
         self, record: MemoryRecord, turn: int | None = None
     ) -> tuple[MemoryRecord, EventRecord]:
+        self._validate_turn(turn)
         eff_turn = self.get_current_turn() if turn is None else turn
         ts = record.created_at or _utc_now()
         record.created_at = ts
@@ -343,48 +355,64 @@ class MemoryStorage:
         record.turn_created = record.turn_created or eff_turn
         record.turn_updated = eff_turn
         record.turn_last_accessed = max(record.turn_last_accessed, eff_turn)
+        record.recompute_token_costs()
 
         with self.conn:
             if eff_turn > self.get_current_turn():
                 self._set_meta("current_turn", str(eff_turn))
+            event_id = self._reserve_event_id_in_tx()
+            if event_id not in record.source_events:
+                record.source_events.append(event_id)
             evt = self._append_event_in_tx(
                 turn=eff_turn,
                 event_type="memory.committed",
                 payload={"record": record.to_dict()},
                 created_at=ts,
+                event_id=event_id,
             )
-            if evt.event_id not in record.source_events:
-                record.source_events.append(evt.event_id)
             self._insert_memory_row(record)
         return record, evt
 
     def update_memory(
         self, record: MemoryRecord, turn: int | None = None
     ) -> tuple[MemoryRecord, EventRecord]:
+        self._validate_turn(turn)
         eff_turn = self.get_current_turn() if turn is None else turn
         ts = _utc_now()
         record.updated_at = ts
         record.turn_updated = eff_turn
+        record.recompute_token_costs()
         with self.conn:
             if eff_turn > self.get_current_turn():
                 self._set_meta("current_turn", str(eff_turn))
+            event_id = self._reserve_event_id_in_tx()
+            if event_id not in record.source_events:
+                record.source_events.append(event_id)
             evt = self._append_event_in_tx(
                 turn=eff_turn,
                 event_type="memory.updated",
                 payload={"record": record.to_dict()},
                 created_at=ts,
+                event_id=event_id,
             )
-            if evt.event_id not in record.source_events:
-                record.source_events.append(evt.event_id)
             self._update_memory_row(record)
         return record, evt
 
     def supersede_memory(
         self, old_id: str, new_record: MemoryRecord, turn: int | None = None
     ) -> tuple[MemoryRecord, MemoryRecord, EventRecord]:
+        self._validate_turn(turn)
+        if new_record.id == old_id:
+            raise ValueError("Cannot supersede a memory with itself")
         old_record = self.get_memory(old_id)
         if old_record is None:
             raise KeyError(f"Memory not found: {old_id}")
+        if old_record.status == MemoryStatus.SUPERSEDED:
+            raise ValueError(
+                f"Memory {old_id} is already superseded by {old_record.superseded_by_id}"
+            )
+        if old_record.status == MemoryStatus.ARCHIVED:
+            raise ValueError(f"Cannot supersede archived memory: {old_id}")
 
         eff_turn = self.get_current_turn() if turn is None else turn
         ts = _utc_now()
@@ -394,6 +422,7 @@ class MemoryStorage:
         new_record.turn_updated = eff_turn
         new_record.turn_last_accessed = max(new_record.turn_last_accessed, eff_turn)
         new_record.supersedes_id = old_id
+        new_record.recompute_token_costs()
 
         old_record.status = MemoryStatus.SUPERSEDED
         old_record.superseded_by_id = new_record.id
@@ -404,6 +433,9 @@ class MemoryStorage:
         with self.conn:
             if eff_turn > self.get_current_turn():
                 self._set_meta("current_turn", str(eff_turn))
+            event_id = self._reserve_event_id_in_tx()
+            if event_id not in new_record.source_events:
+                new_record.source_events.append(event_id)
             evt = self._append_event_in_tx(
                 turn=eff_turn,
                 event_type="memory.superseded",
@@ -412,9 +444,8 @@ class MemoryStorage:
                     "new_record": new_record.to_dict(),
                 },
                 created_at=ts,
+                event_id=event_id,
             )
-            if evt.event_id not in new_record.source_events:
-                new_record.source_events.append(evt.event_id)
             self._insert_memory_row(new_record)
             self._update_memory_row(old_record)
             self.conn.execute(
@@ -429,6 +460,7 @@ class MemoryStorage:
     def set_status(
         self, memory_id: str, status: MemoryStatus, turn: int | None = None
     ) -> MemoryRecord:
+        self._validate_turn(turn)
         record = self.get_memory(memory_id)
         if record is None:
             raise KeyError(f"Memory not found: {memory_id}")
@@ -458,6 +490,7 @@ class MemoryStorage:
     def set_pinned(
         self, memory_id: str, pinned: bool, turn: int | None = None
     ) -> MemoryRecord:
+        self._validate_turn(turn)
         record = self.get_memory(memory_id)
         if record is None:
             raise KeyError(f"Memory not found: {memory_id}")
@@ -501,6 +534,11 @@ class MemoryStorage:
         weight: float = 1.0,
         turn: int | None = None,
     ) -> MemoryLink:
+        self._validate_turn(turn)
+        if src_id == dst_id:
+            raise ValueError(f"Self-links are not allowed: {src_id}")
+        if math.isnan(weight) or math.isinf(weight):
+            raise ValueError(f"Invalid link weight: {weight}")
         if self.get_memory(src_id) is None:
             raise KeyError(f"Source memory not found: {src_id}")
         if self.get_memory(dst_id) is None:
@@ -564,6 +602,7 @@ class MemoryStorage:
         turn: int | None = None,
         checkpoint_id: str | None = None,
     ) -> CheckpointRecord:
+        self._validate_turn(turn)
         eff_turn = self.get_current_turn() if turn is None else turn
         cp_id = checkpoint_id or self.next_checkpoint_id()
         ts = _utc_now()
@@ -626,6 +665,7 @@ class MemoryStorage:
         digest_record: MemoryRecord,
         turn: int | None = None,
     ) -> tuple[MemoryRecord, EventRecord]:
+        self._validate_turn(turn)
         eff_turn = self.get_current_turn() if turn is None else turn
         ts = _utc_now()
         digest_record.created_at = digest_record.created_at or ts
@@ -633,10 +673,14 @@ class MemoryStorage:
         digest_record.turn_created = digest_record.turn_created or eff_turn
         digest_record.turn_updated = eff_turn
         digest_record.turn_last_accessed = max(digest_record.turn_last_accessed, eff_turn)
+        digest_record.recompute_token_costs()
 
         with self.conn:
             if eff_turn > self.get_current_turn():
                 self._set_meta("current_turn", str(eff_turn))
+            event_id = self._reserve_event_id_in_tx()
+            if event_id not in digest_record.source_events:
+                digest_record.source_events.append(event_id)
             evt = self._append_event_in_tx(
                 turn=eff_turn,
                 event_type="memory.compacted",
@@ -645,9 +689,8 @@ class MemoryStorage:
                     "digest_record": digest_record.to_dict(),
                 },
                 created_at=ts,
+                event_id=event_id,
             )
-            if evt.event_id not in digest_record.source_events:
-                digest_record.source_events.append(evt.event_id)
             self._insert_memory_row(digest_record)
             for aid in archived_ids:
                 rec = self.get_memory(aid)
@@ -765,11 +808,12 @@ class MemoryStorage:
 
     def replay_events_to_storage(self, target_turn: int) -> "MemoryStorage":
         """Reconstruct deterministic memory state at `target_turn` in an in-memory store."""
+        self._validate_turn(target_turn)
         replayed = MemoryStorage(":memory:")
         events = self.list_events(up_to_turn=target_turn)
-        max_turn = 0
         max_mem_seq = 0
         max_cp_seq = 0
+        max_evt_seq = 0
 
         def _parse_seq(prefix_id: str) -> int:
             try:
@@ -779,12 +823,13 @@ class MemoryStorage:
 
         with replayed.conn:
             for evt in events:
-                max_turn = max(max_turn, evt.turn)
+                max_evt_seq = max(max_evt_seq, _parse_seq(evt.event_id))
                 replayed._append_event_in_tx(
                     turn=evt.turn,
                     event_type=evt.event_type,
                     payload=evt.payload,
                     created_at=evt.created_at,
+                    event_id=evt.event_id,
                 )
                 etype = evt.event_type
                 payload = evt.payload
@@ -811,19 +856,19 @@ class MemoryStorage:
                         old_rec.turn_updated = evt.turn
                         old_rec.updated_at = evt.created_at
                         replayed._update_memory_row(old_rec)
-                    replayed.conn.execute(
-                        """
-                        INSERT OR REPLACE INTO memory_links(src_id, dst_id, relation, weight, created_at)
-                        VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (
-                            new_rec.id,
-                            old_id,
-                            LinkRelation.SUPERSEDES.value,
-                            1.0,
-                            evt.created_at,
-                        ),
-                    )
+                        replayed.conn.execute(
+                            """
+                            INSERT OR REPLACE INTO memory_links(src_id, dst_id, relation, weight, created_at)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (
+                                new_rec.id,
+                                old_id,
+                                LinkRelation.SUPERSEDES.value,
+                                1.0,
+                                evt.created_at,
+                            ),
+                        )
 
                 elif etype == "memory.status_changed":
                     rec = replayed.get_memory(payload["id"])
@@ -843,19 +888,25 @@ class MemoryStorage:
                         replayed._update_memory_row(rec)
 
                 elif etype == "memory.linked":
-                    replayed.conn.execute(
-                        """
-                        INSERT OR REPLACE INTO memory_links(src_id, dst_id, relation, weight, created_at)
-                        VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (
-                            payload["src_id"],
-                            payload["dst_id"],
-                            payload["relation"],
-                            float(payload.get("weight", 1.0)),
-                            evt.created_at,
-                        ),
-                    )
+                    src_id = payload["src_id"]
+                    dst_id = payload["dst_id"]
+                    if (
+                        replayed.get_memory(src_id) is not None
+                        and replayed.get_memory(dst_id) is not None
+                    ):
+                        replayed.conn.execute(
+                            """
+                            INSERT OR REPLACE INTO memory_links(src_id, dst_id, relation, weight, created_at)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (
+                                src_id,
+                                dst_id,
+                                payload["relation"],
+                                float(payload.get("weight", 1.0)),
+                                evt.created_at,
+                            ),
+                        )
 
                 elif etype == "checkpoint.saved":
                     cp_id = payload["id"]
@@ -888,23 +939,24 @@ class MemoryStorage:
                             old.turn_updated = evt.turn
                             old.updated_at = evt.created_at
                             replayed._update_memory_row(old)
-                        replayed.conn.execute(
-                            """
-                            INSERT OR IGNORE INTO memory_links(src_id, dst_id, relation, weight, created_at)
-                            VALUES (?, ?, ?, ?, ?)
-                            """,
-                            (
-                                digest_rec.id,
-                                aid,
-                                LinkRelation.REFINES.value,
-                                0.5,
-                                evt.created_at,
-                            ),
-                        )
+                            replayed.conn.execute(
+                                """
+                                INSERT OR IGNORE INTO memory_links(src_id, dst_id, relation, weight, created_at)
+                                VALUES (?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    digest_rec.id,
+                                    aid,
+                                    LinkRelation.REFINES.value,
+                                    0.5,
+                                    evt.created_at,
+                                ),
+                            )
 
-            replayed._set_meta("current_turn", str(min(target_turn, max_turn) if events else target_turn))
+            replayed._set_meta("current_turn", str(max(0, target_turn)))
             replayed._set_meta("next_mem_seq", str(max_mem_seq + 1))
             replayed._set_meta("next_cp_seq", str(max_cp_seq + 1))
+            replayed._set_meta("next_evt_seq", str(max_evt_seq + 1))
 
         return replayed
 
@@ -969,6 +1021,18 @@ class MemoryStorage:
         integrity = self.conn.execute("PRAGMA integrity_check").fetchone()[0]
         mem_cnt = self.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
         fts_cnt = self.conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0]
+        missing_fts = [
+            r[0]
+            for r in self.conn.execute(
+                "SELECT id FROM memories EXCEPT SELECT memory_id FROM memories_fts"
+            ).fetchall()
+        ]
+        extra_fts = [
+            r[0]
+            for r in self.conn.execute(
+                "SELECT memory_id FROM memories_fts EXCEPT SELECT id FROM memories"
+            ).fetchall()
+        ]
         chain_ok, chain_errors = self.verify_event_chain()
         orphan_sup = self.conn.execute(
             """
@@ -977,15 +1041,30 @@ class MemoryStorage:
               AND supersedes_id NOT IN (SELECT id FROM memories)
             """
         ).fetchall()
+        orphan_sup_by = self.conn.execute(
+            """
+            SELECT id FROM memories
+            WHERE superseded_by_id IS NOT NULL
+              AND superseded_by_id NOT IN (SELECT id FROM memories)
+            """
+        ).fetchall()
         issues: list[str] = []
         if integrity != "ok":
             issues.append(f"sqlite integrity_check={integrity}")
         if mem_cnt != fts_cnt:
             issues.append(f"FTS sync mismatch: memories={mem_cnt}, memories_fts={fts_cnt}")
+        if missing_fts or extra_fts:
+            issues.append(
+                f"FTS index divergence: missing_in_fts={missing_fts}, extra_in_fts={extra_fts}"
+            )
         if not chain_ok:
             issues.extend(chain_errors)
         if orphan_sup:
             issues.append(f"Orphan supersedes_id references: {[r['id'] for r in orphan_sup]}")
+        if orphan_sup_by:
+            issues.append(
+                f"Orphan superseded_by_id references: {[r['id'] for r in orphan_sup_by]}"
+            )
         return {
             "ok": len(issues) == 0,
             "sqlite_integrity": integrity,

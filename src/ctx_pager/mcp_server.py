@@ -9,13 +9,14 @@ import sys
 from typing import Any, TextIO
 
 from ctx_pager.engine import ContextPager
-from ctx_pager.models import MemoryKind, Resolution
+from ctx_pager.models import LinkRelation, MemoryKind, Resolution
 
 _PROTOCOL_VERSION = "2024-11-05"
 
 
 def _tool_definitions() -> list[dict[str, Any]]:
     kinds = [k.value for k in MemoryKind]
+    relations = [r.value for r in LinkRelation]
     return [
         {
             "name": "ctx_commit",
@@ -114,6 +115,33 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "description": "Return storage counts, token footprints, and integrity status.",
             "inputSchema": {"type": "object", "properties": {}},
         },
+        {
+            "name": "ctx_link",
+            "description": "Create a typed relation link between two stored memories.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "src_id": {"type": "string"},
+                    "dst_id": {"type": "string"},
+                    "relation": {"type": "string", "enum": relations},
+                    "weight": {"type": "number", "default": 1.0},
+                    "turn": {"type": "integer"},
+                },
+                "required": ["src_id", "dst_id", "relation"],
+            },
+        },
+        {
+            "name": "ctx_resolve",
+            "description": "Mark a memory (such as an open_loop) as resolved.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "memory_id": {"type": "string"},
+                    "turn": {"type": "integer"},
+                },
+                "required": ["memory_id"],
+            },
+        },
     ]
 
 
@@ -130,14 +158,21 @@ class McpServer:
         self.stdin = stdin or sys.stdin
         self.stdout = stdout or sys.stdout
 
-    def handle_request(self, req: dict[str, Any]) -> dict[str, Any] | None:
+    def handle_request(self, req: Any) -> dict[str, Any] | None:
+        if not isinstance(req, dict):
+            return self._error(None, -32600, "Invalid Request")
         req_id = req.get("id")
         method = req.get("method", "")
-        params = req.get("params") or {}
+        params = req.get("params")
+        if params is None:
+            params = {}
 
-        # Notifications carry no id and expect no response.
-        if method.startswith("notifications/") or req_id is None and method == "notifications/initialized":
+        if req_id is None and isinstance(method, str) and method.startswith("notifications/"):
             return None
+        if not isinstance(method, str) or not method:
+            return self._error(req_id, -32600, "Invalid Request")
+        if not isinstance(params, dict):
+            return self._error(req_id, -32602, "Invalid params")
 
         try:
             if method == "initialize":
@@ -151,7 +186,12 @@ class McpServer:
             elif method == "tools/list":
                 result = {"tools": _tool_definitions()}
             elif method == "tools/call":
-                result = self._call_tool(params.get("name", ""), params.get("arguments") or {})
+                raw_args = params.get("arguments")
+                if raw_args is None:
+                    raw_args = {}
+                if not isinstance(raw_args, dict):
+                    return self._error(req_id, -32602, "Invalid tool arguments")
+                result = self._call_tool(params.get("name", ""), raw_args)
             elif method == "resources/list":
                 result = {
                     "resources": [
@@ -215,7 +255,7 @@ class McpServer:
                 return {
                     "content": [{"type": "text", "text": frame.rendered}],
                     "isError": False,
-                    "meta": {
+                    "_meta": {
                         "used_tokens": frame.used_tokens,
                         "budget_tokens": frame.budget_tokens,
                         "page_in_hints": frame.page_in_hints,
@@ -227,10 +267,22 @@ class McpServer:
                     list(args["ids"]),
                     include_neighbors=bool(args.get("include_neighbors", True)),
                 )
+                if not res["records"]:
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Memory not found: {', '.join(res['missing_ids'])}",
+                            }
+                        ],
+                        "isError": True,
+                    }
                 lines = [r.render(Resolution.L2) for r in res["records"]]
                 if res["neighbors"]:
                     lines.append("--- Neighbors ---")
                     lines.extend(n.render(Resolution.L1) for n in res["neighbors"])
+                if res["missing_ids"]:
+                    lines.append(f"[Missing IDs: {', '.join(res['missing_ids'])}]")
                 return {
                     "content": [{"type": "text", "text": "\n".join(lines)}],
                     "isError": False,
@@ -269,11 +321,25 @@ class McpServer:
                     {"stats": self.engine.stats(), "doctor": self.engine.doctor()}
                 )
 
+            if name == "ctx_link":
+                lnk = self.engine.link(
+                    args["src_id"],
+                    args["dst_id"],
+                    args["relation"],
+                    weight=float(args.get("weight", 1.0)),
+                    turn=args.get("turn"),
+                )
+                return self._tool_ok(lnk.to_dict())
+
+            if name == "ctx_resolve":
+                rec = self.engine.resolve(args["memory_id"], turn=args.get("turn"))
+                return self._tool_ok(rec.to_dict())
+
             return {
                 "content": [{"type": "text", "text": f"Unknown tool: {name}"}],
                 "isError": True,
             }
-        except (KeyError, ValueError) as exc:
+        except (KeyError, ValueError, TypeError) as exc:
             return {
                 "content": [{"type": "text", "text": f"Tool error: {exc}"}],
                 "isError": True,

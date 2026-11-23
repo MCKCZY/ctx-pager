@@ -9,7 +9,6 @@ from ctx_pager.models import (
     BudgetProfile,
     CheckpointRecord,
     ContextFrame,
-    MemoryKind,
     MemoryRecord,
     PackedItem,
     Resolution,
@@ -182,6 +181,7 @@ class ContextPacker:
                 best_next_res: Resolution | None = None
                 best_delta_t = 0
                 best_gain_per_tok = 0.0
+                did_free_upgrade = False
 
                 for item in recall_items:
                     cur = item.resolution
@@ -202,6 +202,7 @@ class ContextPacker:
                         if nxt == Resolution.L1 or item.record.has_distinct_detail():
                             item.resolution = nxt
                             item.tokens = item.record.token_cost(nxt)
+                            did_free_upgrade = True
                         continue
                     if delta_t > slot_left:
                         continue
@@ -214,6 +215,8 @@ class ContextPacker:
                         best_delta_t = delta_t
 
                 if best_item is None or best_next_res is None:
+                    if did_free_upgrade:
+                        continue
                     break
                 best_item.resolution = best_next_res
                 best_item.tokens = best_item.record.token_cost(best_next_res)
@@ -296,7 +299,7 @@ class ContextPacker:
         dropped_extra = 0
         cp = checkpoint
 
-        for _ in range(128):
+        while True:
             rendered = self._render_frame(
                 fmt=fmt,
                 query=query,
@@ -328,12 +331,23 @@ class ContextPacker:
             if cp is not None:
                 cp = None
                 continue
-            # Last resort when budget is extremely tight.
+            # All items and checkpoint cleared; emit valid minimal fallback if formatting still exceeds tiny budget.
+            if fmt == "json":
+                minimal_json = json.dumps(
+                    {"turn": turn, "budget_tokens": total_budget, "items": []},
+                    separators=(",", ":"),
+                )
+                if estimate_tokens(minimal_json) <= total_budget:
+                    return minimal_json, cp, dropped_extra
+                return "{}", cp, dropped_extra
+            if fmt == "xml":
+                minimal_xml = f'<context_frame turn="{turn}" budget_tokens="{total_budget}"/>'
+                if estimate_tokens(minimal_xml) <= total_budget:
+                    return minimal_xml, cp, dropped_extra
+                return "<context_frame/>", cp, dropped_extra
             while estimate_tokens(rendered) > total_budget and len(rendered) > 16:
                 rendered = rendered[: max(16, int(len(rendered) * 0.8))]
             return rendered, cp, dropped_extra
-
-        return rendered, cp, dropped_extra
 
     @staticmethod
     def _trim_one_step(items: list[PackedItem]) -> tuple[bool, bool]:
