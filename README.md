@@ -63,7 +63,7 @@
 仅需 Python 3.10+（需系统 SQLite 支持 FTS5，已验证 Python 3.14 + SQLite 3.46.1），零第三方 pip 依赖：
 
 ```bash
-git clone <your-repo-url> ctx-pager
+git clone https://github.com/MCKCZY/ctx-pager.git
 cd ctx-pager
 PYTHONPATH=src python3 examples/demo_small_context_session.py
 ```
